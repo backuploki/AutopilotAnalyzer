@@ -2,6 +2,8 @@
 .SYNOPSIS
     Autopilot Analyzer - Architect Edition
     - Deep Extraction & Auto-Collection of MDM Logs
+    - Direct XML, YAML, EVTX, and Archive Support
+    - OS Level Event Log (EVTX) Parsing & Remediation
     - MVP Community Knowledge Base Links
     - Direct Intune/Entra Admin Portal Deep-Links
     - App ID Regex Extraction & Intune Deep-Links
@@ -16,16 +18,30 @@ param (
     [switch]$ExportCSV
 )
 
-# If the user runs the script with no parameters, show them how to use it
+# If no parameters are provided, open a File Explorer GUI to select the log file
 if (-not $LogPath -and -not $CollectLocal) {
-    Write-Warning "No log source specified."
-    Write-Host "Usage Examples:" -ForegroundColor Cyan
-    Write-Host "  Collect logs from this PC: .\AutopilotAnalyzer.ps1 -CollectLocal"
-    Write-Host "  Analyze an existing zip:   .\AutopilotAnalyzer.ps1 -LogPath 'C:\Path\To\Logs.zip'"
-    return
+    Write-Host "No log source specified. Opening file browser..." -ForegroundColor Cyan
+    
+    Add-Type -AssemblyName System.Windows.Forms
+    $FileBrowser = New-Object System.Windows.Forms.OpenFileDialog
+    $FileBrowser.Title = "Select Autopilot Log Source (.zip, .cab, .xml, .yaml, .log, .evtx)"
+    $FileBrowser.Filter = "Supported Logs (*.zip;*.cab;*.xml;*.yaml;*.yml;*.log;*.evtx)|*.zip;*.cab;*.xml;*.yaml;*.yml;*.log;*.evtx|All Files (*.*)|*.*"
+    $FileBrowser.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+    
+    $DialogResult = $FileBrowser.ShowDialog()
+    
+    if ($DialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
+        $LogPath = $FileBrowser.FileName
+        Write-Host "Selected file: $LogPath" -ForegroundColor Green
+    } else {
+        Write-Warning "No file selected. Exiting."
+        Write-Host "Alternative command line usage:" -ForegroundColor Cyan
+        Write-Host "  Collect logs from this PC: .\AutopilotAnalyzer.ps1 -CollectLocal"
+        return
+    }
 }
 
-# If they provided a LogPath, make sure the file actually exists
+# If they provided a LogPath (via CLI or GUI), make sure the file actually exists
 if ($LogPath -and -not (Test-Path $LogPath)) {
     Write-Error "LogPath not found at '$LogPath'. Please verify the file exists."
     return
@@ -33,22 +49,43 @@ if ($LogPath -and -not (Test-Path $LogPath)) {
 
 # --- INTERNAL BRAIN: KNOWLEDGE BASE & PORTALS ---
 function Get-ErrorInsight {
-    param([string]$Message)
+    param(
+        [string]$Message,
+        [string]$Component
+    )
     $kb = @{
+        # --- INTUNE / AUTOPILOT KB ---
         "-2016281112" = @{ Hint = "Generic Win32 MSI Failure."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/apps/troubleshoot-app-install"; MvpUrl = "https://patchmypc.com/blog/powershell-script-installer-support-for-win32-apps-in-intune/"; MvpName = "Patch My PC"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppsWindowsMenu/~/windowsApps"; PortalName = "Intune Apps Blade" }
         "0x800705b4"  = @{ Hint = "TPM/ESP Timeout. Hardware issue."; DocUrl = "https://learn.microsoft.com/en-us/windows/deployment/windows-autopilot/troubleshoot-autopilot-errors#0x800705b4"; MvpUrl = "https://andrewstaylor.com/2022/08/16/autopilot-troubleshooting-tools-during-esp/"; MvpName = "Andrew Taylor"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesWindowsEnrollmentMenu/~/windowsAutopilot"; PortalName = "Autopilot Devices" }
         "AAD token"   = @{ Hint = "Azure AD comms failed. Check Network/TPM."; DocUrl = "https://learn.microsoft.com/en-us/autopilot/troubleshoot-device-enrollment"; MvpUrl = "https://patchmypc.com/blog/entra-join-no-password-prompt-user-realm-issue/"; MvpName = "Patch My PC"; PortalUrl = "https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DevicesAll"; PortalName = "Entra ID Devices" }
         "channel URI" = @{ Hint = "Push Notification failed."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/enrollment/troubleshoot-windows-enrollment-errors"; MvpUrl = "https://andrewstaylor.com/2024/09/02/enrolling-windows-devices-into-intune-a-definitive-guide/"; MvpName = "Andrew Taylor"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesWindowsEnrollmentMenu/~/windowsAutopilot"; PortalName = "Autopilot Devices" }
         "Timeout"     = @{ Hint = "ESP exceeded 60m limit."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/enrollment/troubleshoot-esp-timeout"; MvpUrl = "https://patchmypc.com/blog/why-do-required-apps-wait-60-minutes-after-autopilot-enrollment/"; MvpName = "Patch My PC"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/DeviceEnrollmentMenuBlade/~/enrollmentStatusPage"; PortalName = "Intune ESP Profiles" }
         "Defender"    = @{ Hint = "Security Baseline or Defender Onboarding failed."; DocUrl = "https://learn.microsoft.com/en-us/microsoft-365/security/defender-endpoint/troubleshoot-onboarding"; MvpUrl = "https://call4cloud.nl/category/microsoft-defender/"; MvpName = "Call4Cloud (Defender)"; PortalUrl = "https://security.microsoft.com/"; PortalName = "Defender Security Center" }
+        
+        # --- OS / EVENT LOG (.EVTX) KB ---
+        "W32Time"     = @{ Hint = "Time Sync Failure. Device clock is off, blocking AAD/Intune auth."; DocUrl = "https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
+        "Schannel"    = @{ Hint = "TLS/SSL Handshake failed. Check proxy, firewall, or missing Root CAs."; DocUrl = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/schannel-errors-overview"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
+        "TPM"         = @{ Hint = "Hardware TPM attestation failed. Clear TPM in BIOS or update firmware."; DocUrl = "https://learn.microsoft.com/en-us/windows/security/hardware-security/tpm/tpm-troubleshooting"; MvpUrl = "https://call4cloud.nl/2021/11/tpm-attestation-failure/"; MvpName = "Call4Cloud (TPM)"; PortalUrl = ""; PortalName = "" }
+        "Netwtw"      = @{ Hint = "Wi-Fi Driver crashed or disconnected during provisioning."; DocUrl = "https://learn.microsoft.com/en-us/windows/deployment/windows-autopilot/troubleshoot-network"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
+        "DNS"         = @{ Hint = "DNS resolution failed. Device cannot find Microsoft endpoints."; DocUrl = "https://learn.microsoft.com/en-us/microsoft-365/enterprise/urls-and-ip-address-ranges"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
     }
     
+    # 1. Check standard hex codes
     $code = if ($Message -match "(0x[0-9a-fA-F]{8}|-?\d{10})") { $Matches[0] } else { $null }
     if ($code -and $kb[$code]) { return $kb[$code] }
+    
+    # 2. Check Intune Keywords
     if ($Message -match "AAD token|GetAADAuthToken") { return $kb["AAD token"] }
     if ($Message -match "channel URI") { return $kb["channel URI"] }
     if ($Message -match "Timeout") { return $kb["Timeout"] }
     if ($Message -match "(?i)defender|endpoint protection|wdapt") { return $kb["Defender"] }
+    
+    # 3. Check OS / EVTX Keywords (Uses Provider/Component Name or Message)
+    if ($Component -match "(?i)W32Time" -or $Message -match "(?i)time service") { return $kb["W32Time"] }
+    if ($Component -match "(?i)Schannel" -or $Message -match "(?i)fatal alert|TLS") { return $kb["Schannel"] }
+    if ($Component -match "(?i)TPM" -or $Message -match "(?i)TPM|attestation") { return $kb["TPM"] }
+    if ($Component -match "(?i)Netwtw|WLAN" -or $Message -match "(?i)wireless|Wi-Fi") { return $kb["Netwtw"] }
+    if ($Component -match "(?i)DNS") { return $kb["DNS"] }
     
     return $null
 }
@@ -65,12 +102,19 @@ if ($CollectLocal) {
     if ($proc.ExitCode -ne 0 -or -not (Test-Path $LogPath)) { Write-Error "Failed to collect local logs."; Exit }
 }
 
-Write-Host "-> Extracting Archives from $LogPath..." -ForegroundColor Cyan
+Write-Host "-> Processing Log Source: $LogPath..." -ForegroundColor Cyan
 $ext = [System.IO.Path]::GetExtension($LogPath).ToLower()
-if ($ext -eq '.zip') { Expand-Archive -Path $LogPath -DestinationPath $workDir -Force }
-elseif ($ext -eq '.cab') { Start-Process -FilePath "expand.exe" -ArgumentList "`"$LogPath`" -F:* `"$workDir`"" -Wait -NoNewWindow }
 
-# Hunt for nested CABs
+# Smart Engine: Extract archives, or simply copy raw files to the workspace
+if ($ext -eq '.zip') { 
+    Expand-Archive -Path $LogPath -DestinationPath $workDir -Force 
+} elseif ($ext -eq '.cab') { 
+    Start-Process -FilePath "expand.exe" -ArgumentList "`"$LogPath`" -F:* `"$workDir`"" -Wait -NoNewWindow 
+} elseif ($ext -match '\.(xml|yaml|yml|log|evtx)') {
+    Copy-Item -Path $LogPath -Destination $workDir -Force
+}
+
+# Hunt for nested CABs (if any were extracted)
 Get-ChildItem -Path $workDir -Filter "*.cab" -Recurse | ForEach-Object {
     $target = Join-Path $_.Directory.FullName ($_.BaseName + "_ext")
     New-Item -ItemType Directory -Path $target -Force | Out-Null
@@ -80,33 +124,38 @@ Get-ChildItem -Path $workDir -Filter "*.cab" -Recurse | ForEach-Object {
 # --- PHASE 2: STATE ANALYSIS ---
 Write-Host "-> Analyzing Provisioning State..." -ForegroundColor Cyan
 $stateParams = @{ TenantId="Unknown"; OSVersion="Unknown"; UPN="Unknown"; Profile="Unknown" }
-$xml = Get-ChildItem -Path $workDir -Filter "MDMDiagReport.xml" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+
+# Broadened filter to catch any uploaded XML file
+$xml = Get-ChildItem -Path $workDir -Filter "*.xml" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 
 if ($xml) {
     [xml]$x = Get-Content $xml.FullName
-    $root = if ($x.DiagReport) { $x.DiagReport } else { $x.MDMEnterpriseDiagnosticsReport }
+    $root = if ($x.DiagReport) { $x.DiagReport } elseif ($x.MDMEnterpriseDiagnosticsReport) { $x.MDMEnterpriseDiagnosticsReport } else { $null }
     
-    if ($root.EnterpriseConfiguration.TenantId) { $stateParams.TenantId = $root.EnterpriseConfiguration.TenantId }
-    if ($root.DeviceVariables.OSVersion) { $stateParams.OSVersion = $root.DeviceVariables.OSVersion }
-    if ($root.DeviceVariables.UserUPN) { $stateParams.UPN = $root.DeviceVariables.UserUPN }
-    elseif ($root.EnterpriseConfiguration.UserUpn) { $stateParams.UPN = $root.EnterpriseConfiguration.UserUpn }
-    if ($root.EnterpriseConfiguration.AutopilotProfileName) { $stateParams.Profile = $root.EnterpriseConfiguration.AutopilotProfileName }
+    if ($root) {
+        if ($root.EnterpriseConfiguration.TenantId) { $stateParams.TenantId = $root.EnterpriseConfiguration.TenantId }
+        if ($root.DeviceVariables.OSVersion) { $stateParams.OSVersion = $root.DeviceVariables.OSVersion }
+        if ($root.DeviceVariables.UserUPN) { $stateParams.UPN = $root.DeviceVariables.UserUPN }
+        elseif ($root.EnterpriseConfiguration.UserUpn) { $stateParams.UPN = $root.EnterpriseConfiguration.UserUpn }
+        if ($root.EnterpriseConfiguration.AutopilotProfileName) { $stateParams.Profile = $root.EnterpriseConfiguration.AutopilotProfileName }
+    }
 }
 
 # --- PHASE 3: LOG ANALYSIS ---
-Write-Host "-> Parsing IME Logs..." -ForegroundColor Cyan
-$ime = Get-ChildItem -Path $workDir -Filter "IntuneManagementExtension.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+Write-Host "-> Parsing Logs..." -ForegroundColor Cyan
 $errors = @(); $apps = @()
 
+# 3A: Parse Intune Management Extension Logs
+$ime = Get-ChildItem -Path $workDir -Filter "IntuneManagementExtension.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($ime) {
     $rex = '<!\[LOG\[(?<Message>.*?)\]LOG\]!><time="(?<Time>.*?)" date="(?<Date>.*?)" component="(?<Component>.*?)" context=".*?" type="(?<Type>.*?)"'
     foreach ($line in [System.IO.File]::ReadLines($ime.FullName)) {
         if ($line -match $rex) {
             $m = $Matches
             if ($m.Type -eq "3" -or $m.Message -match "(?i)fail|error|timeout|exitcode") {
-                $insight = Get-ErrorInsight -Message $m.Message
+                $insight = Get-ErrorInsight -Message $m.Message -Component $m.Component
                 $errors += [PSCustomObject]@{ 
-                    Time=$m.Time; Component=$m.Component; Severity="CRITICAL"; Message=$m.Message;
+                    Time=$m.Time; Component=$m.Component; Severity="IME CRITICAL"; Message=$m.Message;
                     Hint = if ($insight) { $insight.Hint } else { "" };
                     DocUrl = if ($insight) { $insight.DocUrl } else { "" };
                     MvpUrl = if ($insight) { $insight.MvpUrl } else { "" };
@@ -117,11 +166,36 @@ if ($ime) {
             }
             if ($m.Component -match "(?i)AppWorkload|AgentExecutor" -and $m.Message -match "(?i)Downloading|Installing|Enforcing|ExitCode") {
                 $st = if ($m.Message -match "ExitCode.*0") { "Success" } elseif ($m.Message -match "ExitCode") { "Failed" } else { "Info" }
-                
-                # Regex to extract the App ID
                 $appId = if ($m.Message -match "([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})") { $Matches[1] } else { "" }
-                
                 $apps += [PSCustomObject]@{ Time=$m.Time; Component=$m.Component; Status=$st; AppID=$appId; Message=$m.Message }
+            }
+        }
+    }
+}
+
+# 3B: Parse Windows Event Logs (.evtx)
+$evtxFiles = Get-ChildItem -Path $workDir -Filter "*.evtx" -Recurse -ErrorAction SilentlyContinue
+if ($evtxFiles) {
+    Write-Host "-> Parsing Event Logs (.evtx)..." -ForegroundColor Cyan
+    foreach ($evtx in $evtxFiles) {
+        # FilterHashtable is significantly more reliable for offline EVTX files
+        $events = Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -ErrorAction SilentlyContinue
+        
+        if ($events) {
+            foreach ($event in $events) {
+                $insight = Get-ErrorInsight -Message $event.Message -Component $event.ProviderName
+                $errors += [PSCustomObject]@{
+                    Time       = $event.TimeCreated.ToString("HH:mm:ss")
+                    Component  = $event.ProviderName
+                    Severity   = "OS ERROR"
+                    Message    = if ($event.Message) { $event.Message.Replace("`n"," ").Replace("`r","") } else { "Event ID: $($event.Id)" }
+                    Hint       = if ($insight) { $insight.Hint } else { "" }
+                    DocUrl     = if ($insight) { $insight.DocUrl } else { "" }
+                    MvpUrl     = if ($insight) { $insight.MvpUrl } else { "" }
+                    MvpName    = if ($insight) { $insight.MvpName } else { "" }
+                    PortalUrl  = if ($insight) { $insight.PortalUrl } else { "" }
+                    PortalName = if ($insight) { $insight.PortalName } else { "" }
+                }
             }
         }
     }
@@ -137,10 +211,10 @@ $eTbl = if ($errors) {
         $mvpLink = if ($_.MvpUrl) { "<a href='$($_.MvpUrl)' target='_blank' class='link-badge' style='color:#ff8a65;border-color:#ff8a65'>&#11088; $($_.MvpName)</a>" } else { "" }
         $portalLink = if ($_.PortalUrl) { "<a href='$($_.PortalUrl)' target='_blank' class='link-badge' style='color:#b388ff;border-color:#b388ff;font-weight:bold'>&#9881; $($_.PortalName)</a>" } else { "" }
         
-        $fix = if ($_.DocUrl -or $_.PortalUrl) { 
+        $fix = if ($_.DocUrl -or $_.PortalUrl -or $_.Hint) { 
             "<div style='margin-bottom:6px'><strong>$($_.Hint)</strong></div>
              <div style='display:flex; gap:5px; flex-wrap:wrap'>$docLink $mvpLink $portalLink</div>"
-        } else { $_.Hint }
+        } else { "" }
         
         "<tr><td style='width:15%'>$($_.Time)</td><td style='color:#ff4081;width:10%'>$($_.Severity)</td><td style='width:15%'>$($_.Component)</td><td style='width:35%'>$($_.Message)</td><td style='width:25%'>$fix</td></tr>" 
     }
