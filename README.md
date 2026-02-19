@@ -25,6 +25,17 @@ Autopilot Analyzer is a high-performance PowerShell diagnostic engine designed t
 
 ---
 
+## Multiple Ways to Run the Script
+
+Autopilot Analyzer is designed to fit any workflow. You can run it interactively, use it on a broken machine locally, or automate it.
+
+### 1. Interactive GUI Mode (Recommended)
+If you run the script without any parameters, it will launch a native Windows File Browser. This allows you to visually select your log archive (`.zip`, `.cab`) or raw event files (`.evtx`, `.xml`, `.log`).
+```powershell
+.\AutopilotAnalyzer.ps1
+
+
+
 ## Installation
 
 ```powershell
