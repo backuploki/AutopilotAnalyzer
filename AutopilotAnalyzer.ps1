@@ -10,23 +10,25 @@
 #>
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory=$false, HelpMessage="Path to existing .cab or .zip file")]
-    [string]$LogPath = "C:\Temp\DiagLogs.zip",
-
-    [Parameter(Mandatory=$false, HelpMessage="Automatically run MdmDiagnosticsTool to collect logs from the local machine")]
+    [string]$LogPath,
     [switch]$CollectLocal,
-
-    [Parameter(Mandatory=$false, HelpMessage="Export raw data to JSON")]
     [switch]$ExportJSON,
-
-    [Parameter(Mandatory=$false, HelpMessage="Export raw data to CSV")]
     [switch]$ExportCSV
 )
 
-# --- VALIDATION ---
-if (-not $CollectLocal -and -not (Test-Path $LogPath)) {
-    Write-Error "LogPath not found at $LogPath. Please verify the file exists or use -CollectLocal."
-    Exit
+# If the user runs the script with no parameters, show them how to use it
+if (-not $LogPath -and -not $CollectLocal) {
+    Write-Warning "No log source specified."
+    Write-Host "Usage Examples:" -ForegroundColor Cyan
+    Write-Host "  Collect logs from this PC: .\AutopilotAnalyzer.ps1 -CollectLocal"
+    Write-Host "  Analyze an existing zip:   .\AutopilotAnalyzer.ps1 -LogPath 'C:\Path\To\Logs.zip'"
+    return
+}
+
+# If they provided a LogPath, make sure the file actually exists
+if ($LogPath -and -not (Test-Path $LogPath)) {
+    Write-Error "LogPath not found at '$LogPath'. Please verify the file exists."
+    return
 }
 
 # --- INTERNAL BRAIN: KNOWLEDGE BASE & PORTALS ---
