@@ -1,26 +1,50 @@
-# Autopilot Diagnostic Analyzer
+# Autopilot Analyzer - Architect Edition (V5)
 
-**A robust, modular PowerShell engine for automating root-cause analysis of Windows Autopilot failures.**
+Autopilot Analyzer is a high-performance PowerShell diagnostic engine designed to transform complex Intune and Autopilot log files into a clean, actionable visual dashboard. It automates the extraction and parsing of MDM and IME logs, reducing troubleshooting time from hours to seconds.
 
-![Dashboard Screenshot](Media/dashboard_screenshot.png)
+---
 
-## 🚀 The Problem
-Troubleshooting Windows Autopilot failures in an enterprise environment is notoriously time-consuming. Engineers often spend hours manually extracting `.cab` archives, parsing cryptic XML configuration files, and hunting through the verbose `IntuneManagementExtension.log` (CMTrace format) to find a single exit code or timeout.
+## Technical Features
 
-## 🛠 The Solution
-**Autopilot Analyzer** is a custom-built PowerShell module designed to reduce "Time to Diagnosis" from hours to seconds. It programmatically ingests raw diagnostic logs, parses the DOM and Event streams, and correlates the data into a high-level HTML executive dashboard.
+### Dashboardd Preview
+![App Telemetry Dashboard](app_telemetry.png)
 
-## ✨ Key Features
-* **Modular Architecture:** Built as a scalable PowerShell Module with separated Public/Private logic.
-* **Native Ingestion:** Automatically validates and unpacks `.zip` and `.cab` archives without third-party dependencies.
-* **XML DOM Parsing:** Navigates the `MDMDiagReport.xml` DOM to extract Tenant ID, OS Version, and ESP Configuration.
-* **Regex Log Analysis:** Uses advanced Regex with Named Capture Groups to parse CMTrace-formatted logs, filtering specifically for Win32 App and PowerShell script failures.
-* **Zero-Dependency Reporting:** Generates a self-contained, CSS-styled HTML dashboard with dark mode and heads-up metrics.
 
-## 📦 Installation
+- **Deep Extraction Engine:** Automatically processes nested .cab and .zip archives, including local log collection.
+- **Intelligent Error Mapping:** Correlates hex error codes (e.g., 0x800705b4, -2016281112) with plain-English remediation insights.
+- **The Architect Dashboard:**
+    - **Microsoft Documentation:** Direct links to relevant official troubleshooting guides.
+    - **MVP Knowledge Base:** Integrated links to expert articles from community leaders including Rudy Ooms, Andrew Taylor, and Steve Weiner.
+    - **Admin Portal Deep-Links:** Context-aware buttons that open the specific Intune or Entra ID blade required to fix the detected error.
+    - **App ID Tracking:** Automatically extracts Intune App GUIDs from logs and provides direct links to the application's properties in the Intune portal.
+- **Export Capabilities:** Supports raw data export to JSON and CSV for advanced reporting and ticketing integration.
 
-This tool is designed as a standalone module.
+---
 
-1. Clone the repository:
-   ```powershell
-   git clone [https://github.com/YourUsername/AutopilotAnalyzer.git](https://github.com/YourUsername/AutopilotAnalyzer.git)
+## Installation and Requirements
+
+1. Clone this repository:
+   git clone https://github.com/backuploki/AutopilotAnalyzer.git
+
+2. Requirements:
+   - Windows 10/11
+   - PowerShell 5.1 or PowerShell 7+
+   - Administrative privileges (if using the -CollectLocal switch)
+
+---
+
+## Usage Examples
+
+### Analyze a specific log archive:
+.\AutopilotAnalyzer.ps1 -LogPath "C:\Path\To\DiagLogs.zip"
+
+### Collect and analyze logs from the local machine:
+.\AutopilotAnalyzer.ps1 -CollectLocal
+
+### Export analysis to JSON for documentation:
+.\AutopilotAnalyzer.ps1 -LogPath "C:\Temp\Logs.zip" -ExportJSON
+
+---
+
+## Project Purpose
+This tool was built to bridge the gap between raw log data and administrative action. By centralizing documentation, community expertise, and direct portal access, Autopilot Analyzer streamlines the modern endpoint management workflow.
