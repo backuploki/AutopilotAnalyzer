@@ -7,10 +7,10 @@ Autopilot Analyzer is a high-performance PowerShell diagnostic engine designed t
 ## Technical Features
 
 ### Dashboard Preview
-<img src="https://raw.githubusercontent.com/backuploki/AutopilotAnalyzer/main/media/dashboard_screenshot.png" width="800">
+<img src="https://raw.githubusercontent.com/backuploki/AutopilotAnalyzer/main/Media/dashboard_screenshot.png" width="800">
 
 ### App Telemetry Detail
-<img src="https://raw.githubusercontent.com/backuploki/AutopilotAnalyzer/main/media/app_telemetry.png" width="800">
+<img src="https://raw.githubusercontent.com/backuploki/AutopilotAnalyzer/main/Media/app_telemetry.png" width="800">
 
 - **Deep Extraction Engine:** Automatically processes nested .cab and .zip archives, including local log collection.
 - **Intelligent Error Mapping:** Correlates hex error codes (e.g., 0x800705b4, -2016281112) with plain-English remediation insights.
