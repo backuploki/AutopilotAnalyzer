@@ -6,9 +6,11 @@ Autopilot Analyzer is a high-performance PowerShell diagnostic engine designed t
 
 ## Technical Features
 
-### Dashboardd Preview
-![App Telemetry Dashboard](app_telemetry.png)
+### Dashboard Preview
+![Main Dashboard](media/dashboard_screenshot.png)
 
+### App Telemetry Detail
+![App Telemetry Dashboard](media/app_telemetry.png)
 
 - **Deep Extraction Engine:** Automatically processes nested .cab and .zip archives, including local log collection.
 - **Intelligent Error Mapping:** Correlates hex error codes (e.g., 0x800705b4, -2016281112) with plain-English remediation insights.
@@ -24,27 +26,5 @@ Autopilot Analyzer is a high-performance PowerShell diagnostic engine designed t
 ## Installation and Requirements
 
 1. Clone this repository:
-   git clone https://github.com/backuploki/AutopilotAnalyzer.git
-
-2. Requirements:
-   - Windows 10/11
-   - PowerShell 5.1 or PowerShell 7+
-   - Administrative privileges (if using the -CollectLocal switch)
-
----
-
-## Usage Examples
-
-### Analyze a specific log archive:
-.\AutopilotAnalyzer.ps1 -LogPath "C:\Path\To\DiagLogs.zip"
-
-### Collect and analyze logs from the local machine:
-.\AutopilotAnalyzer.ps1 -CollectLocal
-
-### Export analysis to JSON for documentation:
-.\AutopilotAnalyzer.ps1 -LogPath "C:\Temp\Logs.zip" -ExportJSON
-
----
-
-## Project Purpose
-This tool was built to bridge the gap between raw log data and administrative action. By centralizing documentation, community expertise, and direct portal access, Autopilot Analyzer streamlines the modern endpoint management workflow.
+   ```powershell
+   git clone [https://github.com/backuploki/AutopilotAnalyzer.git](https://github.com/backuploki/AutopilotAnalyzer.git)
