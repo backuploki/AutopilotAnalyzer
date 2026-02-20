@@ -9,7 +9,10 @@
     - App ID Regex Extraction & Intune Deep-Links
     - Enhanced XML Data (UPN & Profile)
     - JSON/CSV Export Capabilities
+    - Advanced Network Interception & Proxy Hunting
 #>
+# Place this right above [CmdletBinding()]
+#Requires -RunAsAdministrator
 [CmdletBinding()]
 param (
     [string]$LogPath,
@@ -57,6 +60,8 @@ function Get-ErrorInsight {
         # --- INTUNE / AUTOPILOT KB ---
         "-2016281112" = @{ Hint = "Generic Win32 MSI Failure."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/apps/troubleshoot-app-install"; MvpUrl = "https://patchmypc.com/blog/powershell-script-installer-support-for-win32-apps-in-intune/"; MvpName = "Patch My PC"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppsWindowsMenu/~/windowsApps"; PortalName = "Intune Apps Blade" }
         "0x800705b4"  = @{ Hint = "TPM/ESP Timeout. Hardware issue."; DocUrl = "https://learn.microsoft.com/en-us/windows/deployment/windows-autopilot/troubleshoot-autopilot-errors#0x800705b4"; MvpUrl = "https://andrewstaylor.com/2022/08/16/autopilot-troubleshooting-tools-during-esp/"; MvpName = "Andrew Taylor"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesWindowsEnrollmentMenu/~/windowsAutopilot"; PortalName = "Autopilot Devices" }
+        "0x80072f8f"  = @{ Hint = "HTTPS Inspection/SSL or Clock Skew blocking comms."; DocUrl = "https://learn.microsoft.com/en-us/mem/autopilot/troubleshooting"; MvpUrl = "https://oofhours.com/2019/10/08/troubleshooting-windows-autopilot-a-reference/"; MvpName = "Oofhours"; PortalUrl = ""; PortalName = "" }
+        "0xcaa7000f"  = @{ Hint = "Proxy Block / ADAL/WAM endpoint unreachable."; DocUrl = "https://learn.microsoft.com/en-us/troubleshoot/mem/intune/device-enrollment/troubleshoot-windows-enrollment-errors"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
         "AAD token"   = @{ Hint = "Azure AD comms failed. Check Network/TPM."; DocUrl = "https://learn.microsoft.com/en-us/autopilot/troubleshoot-device-enrollment"; MvpUrl = "https://patchmypc.com/blog/entra-join-no-password-prompt-user-realm-issue/"; MvpName = "Patch My PC"; PortalUrl = "https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DevicesAll"; PortalName = "Entra ID Devices" }
         "channel URI" = @{ Hint = "Push Notification failed."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/enrollment/troubleshoot-windows-enrollment-errors"; MvpUrl = "https://andrewstaylor.com/2024/09/02/enrolling-windows-devices-into-intune-a-definitive-guide/"; MvpName = "Andrew Taylor"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesWindowsEnrollmentMenu/~/windowsAutopilot"; PortalName = "Autopilot Devices" }
         "Timeout"     = @{ Hint = "ESP exceeded 60m limit."; DocUrl = "https://learn.microsoft.com/en-us/mem/intune/enrollment/troubleshoot-esp-timeout"; MvpUrl = "https://patchmypc.com/blog/why-do-required-apps-wait-60-minutes-after-autopilot-enrollment/"; MvpName = "Patch My PC"; PortalUrl = "https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/DeviceEnrollmentMenuBlade/~/enrollmentStatusPage"; PortalName = "Intune ESP Profiles" }
@@ -70,8 +75,8 @@ function Get-ErrorInsight {
         "DNS"         = @{ Hint = "DNS resolution failed. Device cannot find Microsoft endpoints."; DocUrl = "https://learn.microsoft.com/en-us/microsoft-365/enterprise/urls-and-ip-address-ranges"; MvpUrl = ""; MvpName = ""; PortalUrl = ""; PortalName = "" }
     }
     
-    # 1. Check standard hex codes
-    $code = if ($Message -match "(0x[0-9a-fA-F]{8}|-?\d{10})") { $Matches[0] } else { $null }
+    # 1. Check standard hex codes (updated to map to lowercase keys)
+    $code = if ($Message -match "(0x[0-9a-fA-F]{8}|-?\d{10})") { $Matches[0].ToLower() } else { $null }
     if ($code -and $kb[$code]) { return $kb[$code] }
     
     # 2. Check Intune Keywords
@@ -145,14 +150,15 @@ if ($xml) {
 Write-Host "-> Parsing Logs..." -ForegroundColor Cyan
 $errors = @(); $apps = @()
 
-# 3A: Parse Intune Management Extension Logs
+# 3A: Parse Intune Management Extension Logs (Updated Regex Match)
 $ime = Get-ChildItem -Path $workDir -Filter "IntuneManagementExtension.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($ime) {
     $rex = '<!\[LOG\[(?<Message>.*?)\]LOG\]!><time="(?<Time>.*?)" date="(?<Date>.*?)" component="(?<Component>.*?)" context=".*?" type="(?<Type>.*?)"'
     foreach ($line in [System.IO.File]::ReadLines($ime.FullName)) {
         if ($line -match $rex) {
             $m = $Matches
-            if ($m.Type -eq "3" -or $m.Message -match "(?i)fail|error|timeout|exitcode") {
+            # Expanded regex to catch our specific network codes in IME logs
+            if ($m.Type -eq "3" -or $m.Message -match "(?i)fail|error|timeout|exitcode|0x80072f8f|0xcaa7000f") {
                 $insight = Get-ErrorInsight -Message $m.Message -Component $m.Component
                 $errors += [PSCustomObject]@{ 
                     Time=$m.Time; Component=$m.Component; Severity="IME CRITICAL"; Message=$m.Message;
@@ -178,8 +184,19 @@ $evtxFiles = Get-ChildItem -Path $workDir -Filter "*.evtx" -Recurse -ErrorAction
 if ($evtxFiles) {
     Write-Host "-> Parsing Event Logs (.evtx)..." -ForegroundColor Cyan
     foreach ($evtx in $evtxFiles) {
-        # FilterHashtable is significantly more reliable for offline EVTX files
-        $events = Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -ErrorAction SilentlyContinue
+        
+        # Grab generic Level 1 and 2 events (Errors/Criticals)
+        $events = @(Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -ErrorAction SilentlyContinue)
+        
+        # TARGETED HUNT: Force check AAD Operational for our Proxy/SSL codes regardless of event Level
+        if ($evtx.Name -match "(?i)AAD.*Operational") {
+            $aadTargeted = Get-WinEvent -Path $evtx.FullName -ErrorAction SilentlyContinue | Where-Object { $_.Message -match "(?i)(0x80072f8f|0xcaa7000f)" }
+            if ($aadTargeted) { 
+                $events += $aadTargeted 
+                # Remove duplicates in case they were already caught as Level 1/2
+                $events = $events | Select-Object -Unique
+            }
+        }
         
         if ($events) {
             foreach ($event in $events) {
