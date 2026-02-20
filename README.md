@@ -1,4 +1,5 @@
 # Autopilot Analyzer - Architect Edition
+<img width="3311" height="876" alt="ap_analyzer" src="https://github.com/user-attachments/assets/0284e550-a2ac-4f23-9a85-de4ac81a392f" />
 
 **Autopilot Analyzer** is a monolithic, zero-dependency PowerShell diagnostic engine designed for Microsoft Intune and Windows Autopilot. It provides deep forensic analysis of MDM provisioning failures, parses offline Event Logs, tracks App IDs, and seamlessly maps errors to Microsoft documentation and MVP community knowledge bases.
 
