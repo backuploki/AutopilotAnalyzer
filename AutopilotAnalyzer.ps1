@@ -6,7 +6,7 @@
     - Direct XML, YAML, EVTX, and Archive Support
     - Interactive HTML Dashboard with Vanilla JS (Sort/Filter)
     - Advanced Telemetry & Registry Deep-Dives
-    - Robust Error Handling for Event Logs
+    - Robust Error Handling for Event Logs & Standardized Output Paths
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -18,6 +18,7 @@ param (
 )
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$outDir = "$env:USERPROFILE\Downloads"
 
 # --- PHASE 0: KNOWLEDGE BASE ARCHITECTURE ---
 $kbFile = Join-Path $PSScriptRoot "AutopilotKB.json"
@@ -164,7 +165,7 @@ if ($evtxFiles) {
     foreach ($evtx in $evtxFiles) {
         $events = @()
         
-        # FIX: Try/Catch wrapper prevents script failure on empty or locked .evtx files
+        # Try/Catch wrapper prevents script failure on empty or locked .evtx files
         try {
             $events += @(Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -MaxEvents 500 -ErrorAction Stop)
         } catch {
@@ -260,7 +261,8 @@ $aRows = if ($apps) {
     }
 } else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No App Telemetry Found.</td></tr>" }
 
-$htmlPath = Join-Path $env:TEMP "Autopilot_Dashboard_$timestamp.html"
+# Rerouted directly to the user's Downloads folder
+$htmlPath = Join-Path $outDir "Autopilot_Dashboard_$timestamp.html"
 @"
 <!DOCTYPE html><html><head><title>Autopilot Diagnostic System</title><style>$css</style>$js</head><body>
 <div class='header'><h1>Autopilot Analyzer - Architect Edition</h1></div>
@@ -289,20 +291,22 @@ $htmlPath = Join-Path $env:TEMP "Autopilot_Dashboard_$timestamp.html"
 
 # --- EXPORT & CLEANUP ---
 if ($ExportJSON) {
-    $jsonPath = Join-Path $env:TEMP "AutopilotData_$timestamp.json"
+    # Rerouted to Downloads
+    $jsonPath = Join-Path $outDir "AutopilotData_$timestamp.json"
     @{ Telemetry=$telemetry; Errors=$errors; Apps=$apps } | ConvertTo-Json -Depth 4 | Out-File $jsonPath -Encoding utf8
 }
 if ($ExportCSV -and $errors) {
-    $csvPath = Join-Path $env:TEMP "AutopilotErrors_$timestamp.csv"
+    # Rerouted to Downloads
+    $csvPath = Join-Path $outDir "AutopilotErrors_$timestamp.csv"
     $errors | Export-Csv -Path $csvPath -NoTypeInformation
 }
 
 Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
 
-# FIX: Validate the HTML file exists before launching the browser
+# Validate the HTML file exists in the Downloads folder before launching the browser
 if (Test-Path $htmlPath) {
     Write-Host "[ COMPLETE ] Analysis rendered in default browser." -ForegroundColor DarkGreen
     Invoke-Item $htmlPath
 } else {
-    Write-Warning "[ FAILED ] HTML dashboard was not generated at $htmlPath. Check execution logs."
+    Write-Warning "[ FAILED ] HTML dashboard was not found at $htmlPath. Check execution logs."
 }
