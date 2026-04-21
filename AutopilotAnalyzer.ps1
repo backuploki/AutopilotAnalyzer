@@ -1,14 +1,13 @@
 <#
 .SYNOPSIS
-    Autopilot Analyzer - Architect Edition (v2.2)
+    Autopilot Analyzer - Architect Edition (v2.3)
     - Externalized JSON Knowledge Base
     - Compiled Regex Log Parsing Engine
     - Direct XML, YAML, EVTX, and Archive Support
     - Interactive HTML Dashboard with Vanilla JS (Sort/Filter)
     - Collapsible Event Grouping & App Timelines
-    - Advanced Telemetry & Registry Deep-Dives
-    - Native MDM LOB/Store App Telemetry Support
-    - Bulletproof Autopilot Profile Payload Detection
+    - HTML Log Sanitization (Prevents DOM Corruption)
+    - Namespace-Agnostic XML Extraction
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -21,6 +20,12 @@ param (
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $outDir = "$env:USERPROFILE\Downloads"
+
+# --- HELPER FUNCTIONS ---
+function Get-SafeHtml($text) {
+    if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+    return $text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+}
 
 # --- PHASE 0: KNOWLEDGE BASE ARCHITECTURE ---
 $kbFile = Join-Path $PSScriptRoot "AutopilotKB.json"
@@ -98,11 +103,18 @@ if ($CollectLocal) {
     $espData = Get-ItemProperty $espPath -ErrorAction SilentlyContinue
     if ($espData) { $telemetry.ESPTracking = "Active" }
 
-    # NEW: Direct Registry Pull for Autopilot Profile
     $apRegPath = "HKLM:\SOFTWARE\Microsoft\Provisioning\Diagnostics\Autopilot"
     if (Test-Path $apRegPath) {
         $apName = (Get-ItemProperty $apRegPath -Name "ProfileName" -ErrorAction SilentlyContinue).ProfileName
         if ($apName) { $telemetry.Profile = $apName }
+    }
+
+    # Deep Local JSON Fallback
+    if ($telemetry.Profile -eq "Unknown") {
+        $localZTD = "C:\Windows\Provisioning\Autopilot\AutopilotDDSZTDFile.json"
+        if (Test-Path $localZTD) {
+            try { $telemetry.Profile = (Get-Content $localZTD -Raw | ConvertFrom-Json).ZtdProfileName } catch {}
+        }
     }
 }
 
@@ -118,37 +130,30 @@ Get-ChildItem -Path $workDir -Filter "*.cab" -Recurse | ForEach-Object {
     Start-Process "expand.exe" "`"$($_.FullName)`" -F:* `"$target`"" -Wait -NoNewWindow
 }
 
-# --- PHASE 2: STATE ANALYSIS ---
+# --- PHASE 2: STATE ANALYSIS (REGEX XML BYPASS) ---
 Write-Host "-> Parsing Diagnostics & Payloads..." -ForegroundColor Cyan
 
-# 1. Check Standard XML Diagnostic Report
 $xmlFile = Get-ChildItem -Path $workDir -Filter "*.xml" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($xmlFile) {
-    [xml]$x = Get-Content $xmlFile.FullName
-    $root = if ($x.DiagReport) { $x.DiagReport } elseif ($x.MDMEnterpriseDiagnosticsReport) { $x.MDMEnterpriseDiagnosticsReport }
-    if ($root) {
-        if ($root.EnterpriseConfiguration.TenantId) { $telemetry.TenantId = $root.EnterpriseConfiguration.TenantId }
-        if ($root.DeviceVariables.OSVersion) { $telemetry.OSVersion = $root.DeviceVariables.OSVersion }
-        if ($root.DeviceVariables.UserUPN) { $telemetry.UPN = $root.DeviceVariables.UserUPN }
-        # Try XML first, though it may be blank post-OOBE
-        if ($root.EnterpriseConfiguration.AutopilotProfileName -and $telemetry.Profile -eq "Unknown") { 
-            $telemetry.Profile = $root.EnterpriseConfiguration.AutopilotProfileName 
-        }
+    # Using raw RegEx instead of [xml] casting to bypass strictly formatted or missing namespaces
+    $xmlText = Get-Content $xmlFile.FullName -Raw
+    
+    if ($xmlText -match "<TenantId>(.*?)</TenantId>") { $telemetry.TenantId = $Matches[1] }
+    if ($xmlText -match "<OSVersion>(.*?)</OSVersion>") { $telemetry.OSVersion = $Matches[1] }
+    if ($xmlText -match "<UserUPN>(.*?)</UserUPN>") { $telemetry.UPN = $Matches[1] }
+    
+    if ($telemetry.Profile -eq "Unknown" -and $xmlText -match "<AutopilotProfileName>(.*?)</AutopilotProfileName>") { 
+        if (-not [string]::IsNullOrWhiteSpace($Matches[1])) { $telemetry.Profile = $Matches[1] }
     }
 }
 
-# 2. Check Autopilot JSON Payload (Primary Source of Truth from Intune)
 if ($telemetry.Profile -eq "Unknown") {
     $jsonFile = Get-ChildItem -Path $workDir -Filter "AutopilotDDSZTDFile.json" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($jsonFile) {
         try {
             $apJson = Get-Content $jsonFile.FullName -Raw | ConvertFrom-Json
-            if ($apJson.ZtdProfileName) { 
-                $telemetry.Profile = $apJson.ZtdProfileName 
-            }
-        } catch {
-            Write-Warning "Could not parse AutopilotDDSZTDFile.json"
-        }
+            if ($apJson.ZtdProfileName) { $telemetry.Profile = $apJson.ZtdProfileName }
+        } catch {}
     }
 }
 
@@ -169,12 +174,13 @@ if ($ime) {
             $time = $match.Groups['Time'].Value
             $type = $match.Groups['Type'].Value
 
+            $safeMsg = Get-SafeHtml $msg
+
             if ($type -eq "3" -or $msg -match "(?i)fail|error|timeout|exit\s?code|0x80072f8f|0xcaa7000f") {
                 $insight = Get-ErrorInsight -Msg $msg -Comp $comp
-                $errors += [PSCustomObject]@{ Time=$time; Component=$comp; Severity="IME CRITICAL"; Message=$msg; Insight=$insight }
+                $errors += [PSCustomObject]@{ Time=$time; Component=$comp; Severity="IME CRITICAL"; Message=$safeMsg; Insight=$insight }
             }
             
-            # FIX 1: Catch 'Win32App' even if it is buried in the message string instead of the component attribute
             $isAppLog = ($comp -match "(?i)AppWorkload|AgentExecutor|Win32App") -or ($msg -match "(?i)\[Win32App\]|\[AppWorkload\]")
             $isAction = ($msg -match "(?i)Downloading|Installing|Enforcing|Exit\s?Code")
             
@@ -184,7 +190,7 @@ if ($ime) {
                 $idMatch = [regex]::Match($msg, "([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})")
                 $appId = if ($idMatch.Success) { $idMatch.Groups[1].Value } else { "" }
                 
-                $apps += [PSCustomObject]@{ Time=$time; Component=$comp; Status=$st; AppID=$appId; Message=$msg }
+                $apps += [PSCustomObject]@{ Time=$time; Component=$comp; Status=$st; AppID=$appId; Message=$safeMsg }
             }
         }
     }
@@ -200,21 +206,22 @@ if ($evtxFiles) {
             try { $events += @(Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Message -match "(0x80072f8f|0xcaa7000f)" }) | Select-Object -Unique } catch {}
         }
         
-        # FIX 2: Catch LOB and Store Apps native MDM Event Viewer logs (IDs 1920 - 1927)
         if ($evtx.Name -match "(?i)DeviceManagement-Enterprise-Diagnostics-Provider") {
             try {
                 $mdmApps = Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Id -match "^(1920|1921|1922|1923|1924|1925|1926|1927)$" }
                 foreach ($appEvt in $mdmApps) {
                     $st = if ($appEvt.Id -match "1922|1923") { "Failed" } elseif ($appEvt.Id -match "1924|1926") { "Success" } else { "Info" }
-                    $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID="LOB/Store App"; Message=$appEvt.Message.Replace("`n"," ").Replace("`r","") }
+                    $safeMsg = Get-SafeHtml $appEvt.Message
+                    $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID="LOB/Store App"; Message=$safeMsg }
                 }
             } catch {}
         }
 
         foreach ($event in $events) {
             $msg = if ($event.Message) { $event.Message.Replace("`n"," ").Replace("`r","") } else { "Event ID: $($event.Id)" }
+            $safeMsg = Get-SafeHtml $msg
             $insight = Get-ErrorInsight -Msg $msg -Comp $event.ProviderName
-            $errors += [PSCustomObject]@{ Time=$event.TimeCreated.ToString("HH:mm:ss"); Component=$event.ProviderName; Severity="OS ERROR"; Message=$msg; Insight=$insight }
+            $errors += [PSCustomObject]@{ Time=$event.TimeCreated.ToString("HH:mm:ss"); Component=$event.ProviderName; Severity="OS ERROR"; Message=$safeMsg; Insight=$insight }
         }
     }
 }
@@ -279,7 +286,7 @@ details.section-wrapper[open] > summary::before { transform: rotate(90deg); }
 .timeline-event { padding: 8px; border-left: 2px solid #334155; margin-left: 5px; margin-bottom: 5px; background: rgba(0,0,0,0.1); border-radius: 0 4px 4px 0;}
 "@
 
-# GROUPING ERRORS: Roll up duplicate error messages
+# GROUPING ERRORS
 $eRows = if ($errors) { 
     $groupedErrors = $errors | Group-Object -Property Message
     $groupedErrors | ForEach-Object { 
@@ -293,7 +300,6 @@ $eRows = if ($errors) {
             if ($ins.PortalUrl) { $fixes += "<a href='$($ins.PortalUrl)' target='_blank' class='badge portal'>&#9881; Intune Portal</a>" }
         }
         
-        # Build collapsible time badge if there are multiples
         $timeHtml = if ($_.Count -gt 1) {
             $times = $_.Group.Time -join "<br>"
             "<details><summary class='badge'>$($_.Count) Occurrences</summary><div style='margin-top:8px; font-size:0.9em; max-height:150px; overflow-y:auto; color:#94a3b8;'>$times</div></details>"
@@ -306,24 +312,23 @@ $eRows = if ($errors) {
     } 
 } else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No Critical Errors Found.</td></tr>" }
 
-# GROUPING APPS: Roll up app telemetry by AppID to create a timeline
+# GROUPING APPS
 $aRows = if ($apps) {
-    # Group by AppID if it exists, otherwise by the message itself so loose scripts don't lump together
     $groupedApps = $apps | Group-Object -Property @{Expression={if($_.AppID){$_.AppID}else{$_.Message}}}
     
     $groupedApps | ForEach-Object { 
         $first = $_.Group[0]
         $idDisplay = if ($first.AppID -and $first.AppID -ne "LOB/Store App") { "<a href='https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppWorkloadReadOnlyDocument/~/appId/$($first.AppID)' target='_blank' class='badge portal'>&#128230; $($first.AppID.Substring(0,8))...</a>" } elseif ($first.AppID) { "<span class='badge'>$($first.AppID)</span>" } else { "N/A" }
         
-        # Determine overall status of the deployment group
         $overallStatus = "Info"
         if ($_.Group.Status -contains "Failed") { $overallStatus = "Failed" }
         elseif ($_.Group.Status -contains "Success") { $overallStatus = "Success" }
 
-        # Build nested timeline for multiples
         $msgHtml = if ($_.Count -gt 1) {
             $timeline = $_.Group | ForEach-Object { "<div class='timeline-event'><strong>$($_.Time)</strong> [$($_.Component)] - <span class='status-$($_.Status)'>$($_.Status)</span><br><span style='font-size:0.9em; color:#94a3b8'>$($_.Message)</span></div>" } -join ""
-            "<details><summary class='badge'>View Timeline ($($_.Count) Events)</summary><div style='margin-top:10px;'>$timeline</div></details>"
+            
+            # Using inline styles for the summary here to prevent .badge inheritance issues breaking the toggle block
+            "<details><summary style='cursor:pointer; font-weight:600; color:#38bdf8; outline:none; user-select:none; display:inline-block; margin-bottom:5px;'>&#9654; View Timeline ($($_.Count) Events)</summary><div style='margin-top:5px; border-top:1px dashed #334155; padding-top:10px;'>$timeline</div></details>"
         } else {
             $first.Message
         }
