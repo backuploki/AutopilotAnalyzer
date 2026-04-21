@@ -6,6 +6,7 @@
     - Direct XML, YAML, EVTX, and Archive Support
     - Interactive HTML Dashboard with Vanilla JS (Sort/Filter)
     - Advanced Telemetry & Registry Deep-Dives
+    - Robust Error Handling for Event Logs
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -161,10 +162,21 @@ if ($ime) {
 $evtxFiles = Get-ChildItem -Path $workDir -Filter "*.evtx" -Recurse -ErrorAction SilentlyContinue
 if ($evtxFiles) {
     foreach ($evtx in $evtxFiles) {
-        $events = @(Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -MaxEvents 500 -ErrorAction SilentlyContinue)
-        if ($evtx.Name -match "(?i)AAD.*Operational") {
-            $events += @(Get-WinEvent -Path $evtx.FullName -ErrorAction SilentlyContinue | Where-Object { $_.Message -match "(0x80072f8f|0xcaa7000f)" }) | Select-Object -Unique
+        $events = @()
+        
+        # FIX: Try/Catch wrapper prevents script failure on empty or locked .evtx files
+        try {
+            $events += @(Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -MaxEvents 500 -ErrorAction Stop)
+        } catch {
+            Write-Warning "Skipping unreadable event log: $($evtx.Name)"
         }
+
+        if ($evtx.Name -match "(?i)AAD.*Operational") {
+            try {
+                $events += @(Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Message -match "(0x80072f8f|0xcaa7000f)" }) | Select-Object -Unique
+            } catch {}
+        }
+
         foreach ($event in $events) {
             $msg = if ($event.Message) { $event.Message.Replace("`n"," ").Replace("`r","") } else { "Event ID: $($event.Id)" }
             $insight = Get-ErrorInsight -Msg $msg -Comp $event.ProviderName
@@ -286,5 +298,11 @@ if ($ExportCSV -and $errors) {
 }
 
 Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
-Invoke-Item $htmlPath
-Write-Host "[ COMPLETE ] Analysis rendered in default browser." -ForegroundColor DarkGreen
+
+# FIX: Validate the HTML file exists before launching the browser
+if (Test-Path $htmlPath) {
+    Write-Host "[ COMPLETE ] Analysis rendered in default browser." -ForegroundColor DarkGreen
+    Invoke-Item $htmlPath
+} else {
+    Write-Warning "[ FAILED ] HTML dashboard was not generated at $htmlPath. Check execution logs."
+}
