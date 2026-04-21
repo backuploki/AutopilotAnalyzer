@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Autopilot Analyzer - Architect Edition (v2.5)
+    Autopilot Analyzer - Architect Edition (v2.6)
     - Externalized JSON Knowledge Base
     - Compiled Regex Log Parsing Engine
     - Direct XML, YAML, EVTX, and Archive Support
@@ -10,6 +10,7 @@
     - Namespace-Agnostic XML Extraction
     - Dynamic MDM App ID Extraction
     - WHfB & PRT Authentication Tracking
+    - Resolved ForEach-Object Pipeline Parser Bug
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -296,118 +297,4 @@ h1, h2 { color: #f8fafc; font-weight: 600; display: inline-block; margin-bottom:
 .hud-value { font-size: 1.5em; font-weight: 700; word-break: break-all; margin-bottom: 8px; }
 .hud-label { font-size: 0.85em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
 .search-bar { width: 100%; padding: 12px; margin-bottom: 15px; margin-top: 10px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; box-sizing: border-box; }
-table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 40px; }
-th { background: #0f172a; padding: 15px; text-align: left; cursor: pointer; color: #cbd5e1; user-select: none; }
-th:hover { background: #1e293b; }
-td { padding: 12px 15px; border-bottom: 1px solid #334155; word-wrap: break-word; }
-tr:hover { background: #334155; }
-.badge { background: #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.8em; display: inline-block; margin: 2px; white-space: nowrap; cursor: pointer; border: 1px solid #475569;}
-.badge.ms { background: #0284c7; color: #fff; border:none; } .badge.mvp { background: #ea580c; color: #fff; border:none;} .badge.portal { background: #7e22ce; color: #fff; border:none;}
-.status-Success { color: #34d399; font-weight: 600; } .status-Failed { color: #f43f5e; font-weight: 600; } .status-Info { color: #38bdf8; font-weight: 600; }
-
-/* Collapsible UI Styling */
-details > summary { cursor: pointer; list-style: none; font-weight: 600; outline: none; }
-details > summary::-webkit-details-marker { display: none; }
-details.section-wrapper > summary::before { content: '▶ '; font-size: 0.8em; color: #38bdf8; display: inline-block; transition: 0.2s; margin-right: 10px;}
-details.section-wrapper[open] > summary::before { transform: rotate(90deg); }
-.timeline-event { padding: 8px; border-left: 2px solid #334155; margin-left: 5px; margin-bottom: 5px; background: rgba(0,0,0,0.1); border-radius: 0 4px 4px 0;}
-"@
-
-# GROUPING ERRORS
-$eRows = if ($errors) { 
-    $groupedErrors = $errors | Group-Object -Property Message
-    $groupedErrors | ForEach-Object { 
-        $first = $_.Group[0]
-        $ins = $first.Insight
-        $fixes = ""
-        if ($ins) {
-            $fixes += "<div style='margin-bottom:8px; color:#fcd34d'>&#9888; <strong>$($ins.Hint)</strong></div>"
-            if ($ins.DocUrl) { $fixes += "<a href='$($ins.DocUrl)' target='_blank' class='badge ms'>&#128196; MS Docs</a>" }
-            if ($ins.MvpUrl) { $fixes += "<a href='$($ins.MvpUrl)' target='_blank' class='badge mvp'>&#11088; $($ins.MvpName)</a>" }
-            if ($ins.PortalUrl) { $fixes += "<a href='$($ins.PortalUrl)' target='_blank' class='badge portal'>&#9881; Intune Portal</a>" }
-        }
-        
-        $timeHtml = if ($_.Count -gt 1) {
-            $times = $_.Group.Time -join "<br>"
-            "<details><summary class='badge'>$($_.Count) Occurrences</summary><div style='margin-top:8px; font-size:0.9em; max-height:150px; overflow-y:auto; color:#94a3b8;'>$times</div></details>"
-        } else {
-            $first.Time
-        }
-        
-        $compHtml = ($_.Group.Component | Select-Object -Unique) -join ', '
-        "<tr><td>$timeHtml</td><td style='color:#f43f5e'>$($first.Severity)</td><td>$compHtml</td><td>$($first.Message)</td><td>$fixes</td></tr>" 
-    } 
-} else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No Critical Errors Found.</td></tr>" }
-
-# GROUPING APPS
-$aRows = if ($apps) {
-    $groupedApps = $apps | Group-Object -Property @{Expression={if($_.AppID -and $_.AppID -ne "LOB/Store App"){$_.AppID}else{$_.Message}}}
-    
-    $groupedApps | ForEach-Object { 
-        $first = $_.Group[0]
-        $idDisplay = if ($first.AppID -and $first.AppID -match "^[0-9a-fA-F]{8}-") { "<a href='https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppWorkloadReadOnlyDocument/~/appId/$($first.AppID)' target='_blank' class='badge portal'>&#128230; $($first.AppID.Substring(0,8))...</a>" } elseif ($first.AppID -and $first.AppID -ne "LOB/Store App") { "<span class='badge'>$($first.AppID)</span>" } else { "N/A" }
-        
-        $overallStatus = "Info"
-        if ($_.Group.Status -contains "Failed") { $overallStatus = "Failed" }
-        elseif ($_.Group.Status -contains "Success") { $overallStatus = "Success" }
-
-        $msgHtml = if ($_.Count -gt 1) {
-            $timeline = $_.Group | ForEach-Object { "<div class='timeline-event'><strong>$($_.Time)</strong> [$($_.Component)] - <span class='status-$($_.Status)'>$($_.Status)</span><br><span style='font-size:0.9em; color:#94a3b8'>$($_.Message)</span></div>" } -join ""
-            
-            "<details><summary style='cursor:pointer; font-weight:600; color:#38bdf8; outline:none; user-select:none; display:inline-block; margin-bottom:5px;'>&#9654; View Timeline ($($_.Count) Events)</summary><div style='margin-top:5px; border-top:1px dashed #334155; padding-top:10px;'>$timeline</div></details>"
-        } else {
-            $first.Message
-        }
-
-        "<tr><td>$($first.Time)</td><td>$($first.Component)</td><td class='status-$overallStatus'>$overallStatus</td><td>$idDisplay</td><td>$msgHtml</td></tr>" 
-    }
-} else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No App Telemetry Found.</td></tr>" }
-
-$htmlPath = Join-Path $outDir "Autopilot_Dashboard_$timestamp.html"
-@"
-<!DOCTYPE html><html><head><title>Autopilot Diagnostic System</title><style>$css</style>$js</head><body>
-<div class='header'><h1>Autopilot Analyzer - Architect Edition</h1></div>
-<div class='hud-container'>
-    <div class='hud-card $(if($errors){'danger'})'><div class='hud-value'>$($errors.Count)</div><div class='hud-label'>Critical Failures</div></div>
-    <div class='hud-card'><div class='hud-value'>$($telemetry.UPN)</div><div class='hud-label'>Target UPN</div></div>
-    <div class='hud-card'><div class='hud-value'>$($telemetry.Profile)</div><div class='hud-label'>Autopilot Profile</div></div>
-    <div class='hud-card'><div class='hud-value'>$($telemetry.OOBEDisableCMD)</div><div class='hud-label'>OMA-URI: DisableCMD</div></div>
-</div>
-
-<details class='section-wrapper' open><summary><h2>Critical Execution Failures</h2></summary>
-    <input type="text" id="searchErrors" class="search-bar" onkeyup="filterTable('errTable', 'searchErrors')" placeholder="Filter errors by message, code, or component...">
-    <table id="errTable">
-        <tr><th onclick="sortTable(0, 'errTable')">Time &#8693;</th><th onclick="sortTable(1, 'errTable')">Severity &#8693;</th><th onclick="sortTable(2, 'errTable')">Component &#8693;</th><th onclick="sortTable(3, 'errTable')">Message &#8693;</th><th>Remediation Strategy</th></tr>
-        $($eRows -join '')
-    </table>
-</details>
-
-<details class='section-wrapper' open><summary><h2>Application Telemetry</h2></summary>
-    <input type="text" id="searchApps" class="search-bar" onkeyup="filterTable('appTable', 'searchApps')" placeholder="Filter apps by status, ID, or component...">
-    <table id="appTable">
-        <tr><th onclick="sortTable(0, 'appTable')">Time &#8693;</th><th onclick="sortTable(1, 'appTable')">Component &#8693;</th><th onclick="sortTable(2, 'appTable')">Status &#8693;</th><th onclick="sortTable(3, 'appTable')">App ID &#8693;</th><th onclick="sortTable(4, 'appTable')">Message &#8693;</th></tr>
-        $($aRows -join '')
-    </table>
-</details>
-
-</body></html>
-"@ | Out-File $htmlPath -Encoding utf8
-
-# --- EXPORT & CLEANUP ---
-if ($ExportJSON) {
-    $jsonPath = Join-Path $outDir "AutopilotData_$timestamp.json"
-    @{ Telemetry=$telemetry; Errors=$errors; Apps=$apps } | ConvertTo-Json -Depth 4 | Out-File $jsonPath -Encoding utf8
-}
-if ($ExportCSV -and $errors) {
-    $csvPath = Join-Path $outDir "AutopilotErrors_$timestamp.csv"
-    $errors | Export-Csv -Path $csvPath -NoTypeInformation
-}
-
-Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
-
-if (Test-Path $htmlPath) {
-    Write-Host "[ COMPLETE ] Analysis rendered in default browser." -ForegroundColor DarkGreen
-    Invoke-Item $htmlPath
-} else {
-    Write-Warning "[ FAILED ] HTML dashboard was not found at $htmlPath. Check execution logs."
-}
+table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin
