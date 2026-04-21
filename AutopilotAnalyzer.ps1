@@ -1,3 +1,123 @@
+<#
+.SYNOPSIS
+    Autopilot Analyzer - Architect Edition (v2.2)
+    - Externalized JSON Knowledge Base
+    - Compiled Regex Log Parsing Engine
+    - Direct XML, YAML, EVTX, and Archive Support
+    - Interactive HTML Dashboard with Vanilla JS (Sort/Filter)
+    - Collapsible Event Grouping & App Timelines
+    - Advanced Telemetry & Registry Deep-Dives
+    - Native MDM LOB/Store App Telemetry Support
+    - Bulletproof Autopilot Profile Payload Detection
+#>
+#Requires -RunAsAdministrator
+[CmdletBinding()]
+param (
+    [string]$LogPath,
+    [switch]$CollectLocal,
+    [switch]$ExportJSON,
+    [switch]$ExportCSV
+)
+
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$outDir = "$env:USERPROFILE\Downloads"
+
+# --- PHASE 0: KNOWLEDGE BASE ARCHITECTURE ---
+$kbFile = Join-Path $PSScriptRoot "AutopilotKB.json"
+if (-not (Test-Path $kbFile)) {
+    Write-Host "-> Initializing external Knowledge Base (AutopilotKB.json)..." -ForegroundColor Yellow
+    $defaultKB = @{
+        "-2016281112" = @{ Hint="Generic Win32 MSI Failure"; DocUrl="https://learn.microsoft.com/en-us/mem/intune/apps/troubleshoot-app-install"; MvpUrl="https://patchmypc.com/blog/powershell-script-installer-support-for-win32-apps-in-intune/"; MvpName="Patch My PC"; PortalUrl="https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppsWindowsMenu/~/windowsApps" }
+        "0x800705b4"  = @{ Hint="TPM/ESP Timeout. Hardware or Network block."; DocUrl="https://learn.microsoft.com/en-us/windows/deployment/windows-autopilot/troubleshoot-autopilot-errors#0x800705b4"; MvpUrl="https://andrewstaylor.com/2022/08/16/autopilot-troubleshooting-tools-during-esp/"; MvpName="Andrew Taylor"; PortalUrl="https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesWindowsEnrollmentMenu/~/windowsAutopilot" }
+        "0x80072f8f"  = @{ Hint="SSL/TLS Inspection or Clock Skew blocking comms."; DocUrl="https://learn.microsoft.com/en-us/mem/autopilot/troubleshooting"; MvpUrl="https://oofhours.com/2019/10/08/troubleshooting-windows-autopilot-a-reference/"; MvpName="Oofhours (Niehaus)" }
+        "0xcaa7000f"  = @{ Hint="Proxy Block / ADAL/WAM endpoint unreachable."; DocUrl="https://learn.microsoft.com/en-us/troubleshoot/mem/intune/device-enrollment/troubleshoot-windows-enrollment-errors" }
+        "0x81036502"  = @{ Hint="Autopilot profile not found or not assigned."; DocUrl="https://learn.microsoft.com/en-us/mem/autopilot/troubleshoot-profile-download"; MvpUrl="https://oofhours.com/2020/07/12/windows-autopilot-profile-not-found/"; MvpName="Oofhours" }
+        "0x80180014"  = @{ Hint="MDM not supported or User missing Intune License."; DocUrl="https://learn.microsoft.com/en-us/troubleshoot/mem/intune/device-enrollment/troubleshoot-windows-enrollment-errors"; MvpUrl="https://www.petervanderwoude.nl/post/troubleshooting-mdm-enrollment-errors/"; MvpName="Peter van der Woude" }
+        "0x80180018"  = @{ Hint="Device is already enrolled in MDM."; DocUrl="https://learn.microsoft.com/en-us/troubleshoot/mem/intune/device-enrollment/troubleshoot-windows-enrollment-errors"; MvpUrl="https://call4cloud.nl/2022/08/the-last-mdm-enrollment-starfighter/"; MvpName="Call4Cloud (Ooms)" }
+        "aad token"   = @{ Hint="Azure AD comms failed. Check Network/TPM."; MvpUrl="https://patchmypc.com/blog/entra-join-no-password-prompt-user-realm-issue/"; MvpName="Patch My PC"; PortalUrl="https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DevicesAll" }
+        "timeout"     = @{ Hint="ESP exceeded configured time limit."; DocUrl="https://learn.microsoft.com/en-us/mem/intune/enrollment/troubleshoot-esp-timeout"; MvpUrl="https://andrewstaylor.com/2024/09/02/enrolling-windows-devices-into-intune-a-definitive-guide/"; MvpName="Andrew Taylor"; PortalUrl="https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/DeviceEnrollmentMenuBlade/~/enrollmentStatusPage" }
+        "defender"    = @{ Hint="Security Baseline or MDE Onboarding failed."; MvpUrl="https://call4cloud.nl/category/microsoft-defender/"; MvpName="Call4Cloud" }
+        "w32time"     = @{ Hint="Time Sync Failure. Blocks AAD/Intune auth."; DocUrl="https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings" }
+        "schannel"    = @{ Hint="TLS/SSL Handshake failed. Check proxy or Root CAs."; DocUrl="https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/schannel-errors-overview" }
+        "tpm"         = @{ Hint="Hardware TPM attestation failed."; DocUrl="https://learn.microsoft.com/en-us/windows/security/hardware-security/tpm/tpm-troubleshooting"; MvpUrl="https://call4cloud.nl/2021/11/tpm-attestation-failure/"; MvpName="Call4Cloud" }
+    }
+    $defaultKB | ConvertTo-Json -Depth 4 | Out-File $kbFile -Encoding utf8
+}
+
+$global:KBObj = Get-Content $kbFile -Raw | ConvertFrom-Json
+function Get-ErrorInsight($Msg, $Comp) {
+    if ($Msg -match "(0x[0-9a-fA-F]{8}|-?\d{10})") {
+        $code = $Matches[0].ToLower()
+        if ($global:KBObj.PSObject.Properties[$code]) { return $global:KBObj.$code }
+    }
+    foreach ($key in @("aad token", "timeout", "defender", "w32time", "schannel", "tpm")) {
+        if ($Msg -match "(?i)$key" -or $Comp -match "(?i)$key") {
+            if ($global:KBObj.PSObject.Properties[$key]) { return $global:KBObj.$key }
+        }
+    }
+    return $null
+}
+
+# --- GUI / FILE SELECTION ---
+if (-not $LogPath -and -not $CollectLocal) {
+    Write-Host "No log source specified. Opening file browser..." -ForegroundColor Cyan
+    Add-Type -AssemblyName System.Windows.Forms
+    $FileBrowser = New-Object System.Windows.Forms.OpenFileDialog
+    $FileBrowser.Title = "Select Autopilot Log Source (.zip, .cab, .xml, .evtx)"
+    $FileBrowser.Filter = "Supported Logs|*.zip;*.cab;*.xml;*.log;*.evtx|All Files|*.*"
+    $FileBrowser.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+    
+    if ($FileBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $LogPath = $FileBrowser.FileName
+    } else {
+        Write-Warning "No file selected. Run with -CollectLocal to target this PC."
+        return
+    }
+}
+
+if ($LogPath -and -not (Test-Path $LogPath)) { Write-Error "File not found: $LogPath"; return }
+
+# --- PHASE 1: DATA COLLECTION & INGESTION ---
+$workDir = Join-Path -Path $env:TEMP -ChildPath "AutopilotAnalyzer_$timestamp"
+New-Item -Path $workDir -ItemType Directory -Force | Out-Null
+
+$telemetry = @{ TenantId="Unknown"; OSVersion="Unknown"; UPN="Unknown"; Profile="Unknown"; OOBEDisableCMD="Unknown"; ESPTracking="Unknown" }
+
+if ($CollectLocal) {
+    Write-Host "-> [COLLECT LOCAL] Running MdmDiagnosticsTool & Registry Telemetry..." -ForegroundColor Yellow
+    $LogPath = Join-Path -Path $env:TEMP -ChildPath "AutoCollectedLogs_$timestamp.cab"
+    Start-Process -FilePath "MdmDiagnosticsTool.exe" -ArgumentList "-area Autopilot;DeviceProvisioning;Tpm -Cab `"$LogPath`"" -Wait -NoNewWindow
+    
+    $cmdPolicyPath = "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\System"
+    if (Test-Path $cmdPolicyPath) {
+        $cmdVal = (Get-ItemProperty $cmdPolicyPath -Name "DisableCMD" -ErrorAction SilentlyContinue).DisableCMD
+        $telemetry.OOBEDisableCMD = if ($null -ne $cmdVal) { $cmdVal } else { "Not Applied" }
+    }
+    
+    $espPath = "HKLM:\SOFTWARE\Microsoft\Enrollments\*\FirstSync"
+    $espData = Get-ItemProperty $espPath -ErrorAction SilentlyContinue
+    if ($espData) { $telemetry.ESPTracking = "Active" }
+
+    # NEW: Direct Registry Pull for Autopilot Profile
+    $apRegPath = "HKLM:\SOFTWARE\Microsoft\Provisioning\Diagnostics\Autopilot"
+    if (Test-Path $apRegPath) {
+        $apName = (Get-ItemProperty $apRegPath -Name "ProfileName" -ErrorAction SilentlyContinue).ProfileName
+        if ($apName) { $telemetry.Profile = $apName }
+    }
+}
+
+Write-Host "-> Unpacking Data..." -ForegroundColor Cyan
+$ext = [System.IO.Path]::GetExtension($LogPath).ToLower()
+if ($ext -eq '.zip') { Expand-Archive -Path $LogPath -DestinationPath $workDir -Force } 
+elseif ($ext -eq '.cab') { Start-Process "expand.exe" "`"$LogPath`" -F:* `"$workDir`"" -Wait -NoNewWindow } 
+else { Copy-Item -Path $LogPath -Destination $workDir -Force }
+
+Get-ChildItem -Path $workDir -Filter "*.cab" -Recurse | ForEach-Object {
+    $target = Join-Path $_.Directory.FullName ($_.BaseName + "_ext")
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    Start-Process "expand.exe" "`"$($_.FullName)`" -F:* `"$target`"" -Wait -NoNewWindow
+}
+
 # --- PHASE 2: STATE ANALYSIS ---
 Write-Host "-> Parsing Diagnostics & Payloads..." -ForegroundColor Cyan
 
@@ -30,4 +150,233 @@ if ($telemetry.Profile -eq "Unknown") {
             Write-Warning "Could not parse AutopilotDDSZTDFile.json"
         }
     }
+}
+
+# --- PHASE 3: LOG ANALYSIS (COMPILED REGEX) ---
+Write-Host "-> Compiling RegEx Engine & Parsing Logs..." -ForegroundColor Cyan
+$errors = @(); $apps = @()
+
+$imePattern = '<!\[LOG\[(?<Message>.*?)\]LOG\]!><time="(?<Time>.*?)" date="(?<Date>.*?)" component="(?<Component>.*?)" context=".*?" type="(?<Type>.*?)"'
+$imeRegex = [regex]::new($imePattern, [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+$ime = Get-ChildItem -Path $workDir -Filter "IntuneManagementExtension.log" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($ime) {
+    foreach ($line in [System.IO.File]::ReadLines($ime.FullName)) {
+        $match = $imeRegex.Match($line)
+        if ($match.Success) {
+            $msg = $match.Groups['Message'].Value
+            $comp = $match.Groups['Component'].Value
+            $time = $match.Groups['Time'].Value
+            $type = $match.Groups['Type'].Value
+
+            if ($type -eq "3" -or $msg -match "(?i)fail|error|timeout|exit\s?code|0x80072f8f|0xcaa7000f") {
+                $insight = Get-ErrorInsight -Msg $msg -Comp $comp
+                $errors += [PSCustomObject]@{ Time=$time; Component=$comp; Severity="IME CRITICAL"; Message=$msg; Insight=$insight }
+            }
+            
+            # FIX 1: Catch 'Win32App' even if it is buried in the message string instead of the component attribute
+            $isAppLog = ($comp -match "(?i)AppWorkload|AgentExecutor|Win32App") -or ($msg -match "(?i)\[Win32App\]|\[AppWorkload\]")
+            $isAction = ($msg -match "(?i)Downloading|Installing|Enforcing|Exit\s?Code")
+            
+            if ($isAppLog -and $isAction) {
+                $st = if ($msg -match "(?i)Exit\s?Code.*0|completed successfully") { "Success" } elseif ($msg -match "(?i)Exit\s?Code|failed") { "Failed" } else { "Info" }
+                
+                $idMatch = [regex]::Match($msg, "([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})")
+                $appId = if ($idMatch.Success) { $idMatch.Groups[1].Value } else { "" }
+                
+                $apps += [PSCustomObject]@{ Time=$time; Component=$comp; Status=$st; AppID=$appId; Message=$msg }
+            }
+        }
+    }
+}
+
+$evtxFiles = Get-ChildItem -Path $workDir -Filter "*.evtx" -Recurse -ErrorAction SilentlyContinue
+if ($evtxFiles) {
+    foreach ($evtx in $evtxFiles) {
+        $events = @()
+        try { $events += @(Get-WinEvent -FilterHashtable @{Path=$evtx.FullName; Level=1,2} -MaxEvents 500 -ErrorAction Stop) } catch {}
+        
+        if ($evtx.Name -match "(?i)AAD.*Operational") {
+            try { $events += @(Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Message -match "(0x80072f8f|0xcaa7000f)" }) | Select-Object -Unique } catch {}
+        }
+        
+        # FIX 2: Catch LOB and Store Apps native MDM Event Viewer logs (IDs 1920 - 1927)
+        if ($evtx.Name -match "(?i)DeviceManagement-Enterprise-Diagnostics-Provider") {
+            try {
+                $mdmApps = Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Id -match "^(1920|1921|1922|1923|1924|1925|1926|1927)$" }
+                foreach ($appEvt in $mdmApps) {
+                    $st = if ($appEvt.Id -match "1922|1923") { "Failed" } elseif ($appEvt.Id -match "1924|1926") { "Success" } else { "Info" }
+                    $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID="LOB/Store App"; Message=$appEvt.Message.Replace("`n"," ").Replace("`r","") }
+                }
+            } catch {}
+        }
+
+        foreach ($event in $events) {
+            $msg = if ($event.Message) { $event.Message.Replace("`n"," ").Replace("`r","") } else { "Event ID: $($event.Id)" }
+            $insight = Get-ErrorInsight -Msg $msg -Comp $event.ProviderName
+            $errors += [PSCustomObject]@{ Time=$event.TimeCreated.ToString("HH:mm:ss"); Component=$event.ProviderName; Severity="OS ERROR"; Message=$msg; Insight=$insight }
+        }
+    }
+}
+
+# --- PHASE 4: INTERACTIVE HTML DASHBOARD ---
+Write-Host "-> Rendering Interactive Dashboard..." -ForegroundColor Cyan
+
+$js = @"
+<script>
+function filterTable(tableId, inputId) {
+    let input = document.getElementById(inputId).value.toUpperCase();
+    let table = document.getElementById(tableId);
+    let trs = table.getElementsByTagName("tr");
+    for (let i = 1; i < trs.length; i++) {
+        let text = trs[i].textContent || trs[i].innerText;
+        trs[i].style.display = text.toUpperCase().indexOf(input) > -1 ? "" : "none";
+    }
+}
+function sortTable(n, tableId) {
+    let table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+    table = document.getElementById(tableId); switching = true; dir = "asc";
+    while (switching) {
+        switching = false; rows = table.rows;
+        for (i = 1; i < (rows.length - 1); i++) {
+            shouldSwitch = false;
+            x = rows[i].getElementsByTagName("TD")[n]; y = rows[i + 1].getElementsByTagName("TD")[n];
+            if (dir == "asc") { if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) { shouldSwitch = true; break; } } 
+            else if (dir == "desc") { if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) { shouldSwitch = true; break; } }
+        }
+        if (shouldSwitch) { rows[i].parentNode.insertBefore(rows[i + 1], rows[i]); switching = true; switchcount ++; } 
+        else { if (switchcount == 0 && dir == "asc") { dir = "desc"; switching = true; } }
+    }
+}
+</script>
+"@
+
+$css = @"
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f111a; color: #e2e8f0; padding: 30px; margin: 0; }
+a { color: #38bdf8; text-decoration: none; transition: color 0.2s; } a:hover { color: #7dd3fc; }
+h1, h2 { color: #f8fafc; font-weight: 600; display: inline-block; margin-bottom: 5px; }
+.header { border-bottom: 1px solid #334155; padding-bottom: 20px; margin-bottom: 30px; }
+.hud-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 40px; }
+.hud-card { background: #1e293b; padding: 25px; border-radius: 8px; border-top: 4px solid #38bdf8; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+.hud-card.danger { border-top-color: #f43f5e; }
+.hud-value { font-size: 1.5em; font-weight: 700; word-break: break-all; margin-bottom: 8px; }
+.hud-label { font-size: 0.85em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+.search-bar { width: 100%; padding: 12px; margin-bottom: 15px; margin-top: 10px; background: #1e293b; border: 1px solid #334155; color: #fff; border-radius: 6px; box-sizing: border-box; }
+table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 40px; }
+th { background: #0f172a; padding: 15px; text-align: left; cursor: pointer; color: #cbd5e1; user-select: none; }
+th:hover { background: #1e293b; }
+td { padding: 12px 15px; border-bottom: 1px solid #334155; word-wrap: break-word; }
+tr:hover { background: #334155; }
+.badge { background: #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.8em; display: inline-block; margin: 2px; white-space: nowrap; cursor: pointer; border: 1px solid #475569;}
+.badge.ms { background: #0284c7; color: #fff; border:none; } .badge.mvp { background: #ea580c; color: #fff; border:none;} .badge.portal { background: #7e22ce; color: #fff; border:none;}
+.status-Success { color: #34d399; font-weight: 600; } .status-Failed { color: #f43f5e; font-weight: 600; } .status-Info { color: #38bdf8; font-weight: 600; }
+
+/* Collapsible UI Styling */
+details > summary { cursor: pointer; list-style: none; font-weight: 600; outline: none; }
+details > summary::-webkit-details-marker { display: none; }
+details.section-wrapper > summary::before { content: '▶ '; font-size: 0.8em; color: #38bdf8; display: inline-block; transition: 0.2s; margin-right: 10px;}
+details.section-wrapper[open] > summary::before { transform: rotate(90deg); }
+.timeline-event { padding: 8px; border-left: 2px solid #334155; margin-left: 5px; margin-bottom: 5px; background: rgba(0,0,0,0.1); border-radius: 0 4px 4px 0;}
+"@
+
+# GROUPING ERRORS: Roll up duplicate error messages
+$eRows = if ($errors) { 
+    $groupedErrors = $errors | Group-Object -Property Message
+    $groupedErrors | ForEach-Object { 
+        $first = $_.Group[0]
+        $ins = $first.Insight
+        $fixes = ""
+        if ($ins) {
+            $fixes += "<div style='margin-bottom:8px; color:#fcd34d'>&#9888; <strong>$($ins.Hint)</strong></div>"
+            if ($ins.DocUrl) { $fixes += "<a href='$($ins.DocUrl)' target='_blank' class='badge ms'>&#128196; MS Docs</a>" }
+            if ($ins.MvpUrl) { $fixes += "<a href='$($ins.MvpUrl)' target='_blank' class='badge mvp'>&#11088; $($ins.MvpName)</a>" }
+            if ($ins.PortalUrl) { $fixes += "<a href='$($ins.PortalUrl)' target='_blank' class='badge portal'>&#9881; Intune Portal</a>" }
+        }
+        
+        # Build collapsible time badge if there are multiples
+        $timeHtml = if ($_.Count -gt 1) {
+            $times = $_.Group.Time -join "<br>"
+            "<details><summary class='badge'>$($_.Count) Occurrences</summary><div style='margin-top:8px; font-size:0.9em; max-height:150px; overflow-y:auto; color:#94a3b8;'>$times</div></details>"
+        } else {
+            $first.Time
+        }
+        
+        $compHtml = ($_.Group.Component | Select-Object -Unique) -join ', '
+        "<tr><td>$timeHtml</td><td style='color:#f43f5e'>$($first.Severity)</td><td>$compHtml</td><td>$($first.Message)</td><td>$fixes</td></tr>" 
+    } 
+} else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No Critical Errors Found.</td></tr>" }
+
+# GROUPING APPS: Roll up app telemetry by AppID to create a timeline
+$aRows = if ($apps) {
+    # Group by AppID if it exists, otherwise by the message itself so loose scripts don't lump together
+    $groupedApps = $apps | Group-Object -Property @{Expression={if($_.AppID){$_.AppID}else{$_.Message}}}
+    
+    $groupedApps | ForEach-Object { 
+        $first = $_.Group[0]
+        $idDisplay = if ($first.AppID -and $first.AppID -ne "LOB/Store App") { "<a href='https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppWorkloadReadOnlyDocument/~/appId/$($first.AppID)' target='_blank' class='badge portal'>&#128230; $($first.AppID.Substring(0,8))...</a>" } elseif ($first.AppID) { "<span class='badge'>$($first.AppID)</span>" } else { "N/A" }
+        
+        # Determine overall status of the deployment group
+        $overallStatus = "Info"
+        if ($_.Group.Status -contains "Failed") { $overallStatus = "Failed" }
+        elseif ($_.Group.Status -contains "Success") { $overallStatus = "Success" }
+
+        # Build nested timeline for multiples
+        $msgHtml = if ($_.Count -gt 1) {
+            $timeline = $_.Group | ForEach-Object { "<div class='timeline-event'><strong>$($_.Time)</strong> [$($_.Component)] - <span class='status-$($_.Status)'>$($_.Status)</span><br><span style='font-size:0.9em; color:#94a3b8'>$($_.Message)</span></div>" } -join ""
+            "<details><summary class='badge'>View Timeline ($($_.Count) Events)</summary><div style='margin-top:10px;'>$timeline</div></details>"
+        } else {
+            $first.Message
+        }
+
+        "<tr><td>$($first.Time)</td><td>$($first.Component)</td><td class='status-$overallStatus'>$overallStatus</td><td>$idDisplay</td><td>$msgHtml</td></tr>" 
+    }
+} else { "<tr><td colspan='5' style='text-align:center; padding:20px'>No App Telemetry Found.</td></tr>" }
+
+$htmlPath = Join-Path $outDir "Autopilot_Dashboard_$timestamp.html"
+@"
+<!DOCTYPE html><html><head><title>Autopilot Diagnostic System</title><style>$css</style>$js</head><body>
+<div class='header'><h1>Autopilot Analyzer - Architect Edition</h1></div>
+<div class='hud-container'>
+    <div class='hud-card $(if($errors){'danger'})'><div class='hud-value'>$($errors.Count)</div><div class='hud-label'>Critical Failures</div></div>
+    <div class='hud-card'><div class='hud-value'>$($telemetry.UPN)</div><div class='hud-label'>Target UPN</div></div>
+    <div class='hud-card'><div class='hud-value'>$($telemetry.Profile)</div><div class='hud-label'>Autopilot Profile</div></div>
+    <div class='hud-card'><div class='hud-value'>$($telemetry.OOBEDisableCMD)</div><div class='hud-label'>OMA-URI: DisableCMD</div></div>
+</div>
+
+<details class='section-wrapper' open><summary><h2>Critical Execution Failures</h2></summary>
+    <input type="text" id="searchErrors" class="search-bar" onkeyup="filterTable('errTable', 'searchErrors')" placeholder="Filter errors by message, code, or component...">
+    <table id="errTable">
+        <tr><th onclick="sortTable(0, 'errTable')">Time &#8693;</th><th onclick="sortTable(1, 'errTable')">Severity &#8693;</th><th onclick="sortTable(2, 'errTable')">Component &#8693;</th><th onclick="sortTable(3, 'errTable')">Message &#8693;</th><th>Remediation Strategy</th></tr>
+        $($eRows -join '')
+    </table>
+</details>
+
+<details class='section-wrapper' open><summary><h2>Application Telemetry</h2></summary>
+    <input type="text" id="searchApps" class="search-bar" onkeyup="filterTable('appTable', 'searchApps')" placeholder="Filter apps by status, ID, or component...">
+    <table id="appTable">
+        <tr><th onclick="sortTable(0, 'appTable')">Time &#8693;</th><th onclick="sortTable(1, 'appTable')">Component &#8693;</th><th onclick="sortTable(2, 'appTable')">Status &#8693;</th><th onclick="sortTable(3, 'appTable')">App ID &#8693;</th><th onclick="sortTable(4, 'appTable')">Message &#8693;</th></tr>
+        $($aRows -join '')
+    </table>
+</details>
+
+</body></html>
+"@ | Out-File $htmlPath -Encoding utf8
+
+# --- EXPORT & CLEANUP ---
+if ($ExportJSON) {
+    $jsonPath = Join-Path $outDir "AutopilotData_$timestamp.json"
+    @{ Telemetry=$telemetry; Errors=$errors; Apps=$apps } | ConvertTo-Json -Depth 4 | Out-File $jsonPath -Encoding utf8
+}
+if ($ExportCSV -and $errors) {
+    $csvPath = Join-Path $outDir "AutopilotErrors_$timestamp.csv"
+    $errors | Export-Csv -Path $csvPath -NoTypeInformation
+}
+
+Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
+
+if (Test-Path $htmlPath) {
+    Write-Host "[ COMPLETE ] Analysis rendered in default browser." -ForegroundColor DarkGreen
+    Invoke-Item $htmlPath
+} else {
+    Write-Warning "[ FAILED ] HTML dashboard was not found at $htmlPath. Check execution logs."
 }
