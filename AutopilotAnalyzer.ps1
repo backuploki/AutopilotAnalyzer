@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Autopilot Analyzer - Architect Edition (v2.4)
+    Autopilot Analyzer - Architect Edition (v2.5)
     - Externalized JSON Knowledge Base
     - Compiled Regex Log Parsing Engine
     - Direct XML, YAML, EVTX, and Archive Support
@@ -8,7 +8,8 @@
     - Collapsible Event Grouping & App Timelines
     - HTML Log Sanitization (Prevents DOM Corruption)
     - Namespace-Agnostic XML Extraction
-    - Dynamic MDM App ID Extraction (Fix for LOB/Store App grouping)
+    - Dynamic MDM App ID Extraction
+    - WHfB & PRT Authentication Tracking
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -136,7 +137,6 @@ Write-Host "-> Parsing Diagnostics & Payloads..." -ForegroundColor Cyan
 
 $xmlFile = Get-ChildItem -Path $workDir -Filter "*.xml" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($xmlFile) {
-    # Using raw RegEx instead of [xml] casting to bypass strictly formatted or missing namespaces
     $xmlText = Get-Content $xmlFile.FullName -Raw
     
     if ($xmlText -match "<TenantId>(.*?)</TenantId>") { $telemetry.TenantId = $Matches[1] }
@@ -214,7 +214,6 @@ if ($evtxFiles) {
                 foreach ($appEvt in $mdmApps) {
                     $st = if ($appEvt.Id -match "1922|1923") { "Failed" } elseif ($appEvt.Id -match "1924|1926|1927") { "Success" } else { "Info" }
                     
-                    # Dynamic App ID Extraction to separate different LOB/Store apps
                     $extractedId = "LOB/Store App"
                     if ($appEvt.Message -match "([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})") {
                         $extractedId = $Matches[1]
@@ -228,6 +227,19 @@ if ($evtxFiles) {
 
                     $safeMsg = Get-SafeHtml $appEvt.Message
                     $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID=$extractedId; Message=$safeMsg }
+                }
+            } catch {}
+        }
+
+        # Catch Windows Hello for Business & PRT Provisioning Errors
+        if ($evtx.Name -match "(?i)User Device Registration.*Admin") {
+            try {
+                $udrEvents = Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Id -match "^(300|358|360)$" }
+                foreach ($udr in $udrEvents) {
+                    $msg = $udr.Message.Replace("`n"," ").Replace("`r","")
+                    $safeMsg = Get-SafeHtml $msg
+                    $insight = Get-ErrorInsight -Msg $msg -Comp "WHfB Registration"
+                    $errors += [PSCustomObject]@{ Time=$udr.TimeCreated.ToString("HH:mm:ss"); Component="User Device Registration ($($udr.Id))"; Severity="OS ERROR"; Message=$safeMsg; Insight=$insight }
                 }
             } catch {}
         }
