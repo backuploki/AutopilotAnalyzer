@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Autopilot Analyzer - Architect Edition (v2.3)
+    Autopilot Analyzer - Architect Edition (v2.4)
     - Externalized JSON Knowledge Base
     - Compiled Regex Log Parsing Engine
     - Direct XML, YAML, EVTX, and Archive Support
@@ -8,6 +8,7 @@
     - Collapsible Event Grouping & App Timelines
     - HTML Log Sanitization (Prevents DOM Corruption)
     - Namespace-Agnostic XML Extraction
+    - Dynamic MDM App ID Extraction (Fix for LOB/Store App grouping)
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding()]
@@ -206,13 +207,27 @@ if ($evtxFiles) {
             try { $events += @(Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Message -match "(0x80072f8f|0xcaa7000f)" }) | Select-Object -Unique } catch {}
         }
         
+        # Catch LOB and Store Apps native MDM Event Viewer logs (IDs 1920 - 1927) and dynamically extract IDs
         if ($evtx.Name -match "(?i)DeviceManagement-Enterprise-Diagnostics-Provider") {
             try {
                 $mdmApps = Get-WinEvent -Path $evtx.FullName -ErrorAction Stop | Where-Object { $_.Id -match "^(1920|1921|1922|1923|1924|1925|1926|1927)$" }
                 foreach ($appEvt in $mdmApps) {
-                    $st = if ($appEvt.Id -match "1922|1923") { "Failed" } elseif ($appEvt.Id -match "1924|1926") { "Success" } else { "Info" }
+                    $st = if ($appEvt.Id -match "1922|1923") { "Failed" } elseif ($appEvt.Id -match "1924|1926|1927") { "Success" } else { "Info" }
+                    
+                    # Dynamic App ID Extraction to separate different LOB/Store apps
+                    $extractedId = "LOB/Store App"
+                    if ($appEvt.Message -match "([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})") {
+                        $extractedId = $Matches[1]
+                    } elseif ($appEvt.Message -match "PackageFamilyName:\s*([a-zA-Z0-9\.\_]+)" -and $Matches[1] -ne "(null)") {
+                        $extractedId = $Matches[1]
+                    } elseif ($appEvt.Message -match "ProductCode:\s*(\{.*?\})") {
+                        $extractedId = $Matches[1]
+                    } elseif ($appEvt.Message -match "MSI\s+([^\s]+)") {
+                        $extractedId = "MSI: " + $Matches[1]
+                    }
+
                     $safeMsg = Get-SafeHtml $appEvt.Message
-                    $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID="LOB/Store App"; Message=$safeMsg }
+                    $apps += [PSCustomObject]@{ Time=$appEvt.TimeCreated.ToString("HH:mm:ss"); Component="MDM Event ($($appEvt.Id))"; Status=$st; AppID=$extractedId; Message=$safeMsg }
                 }
             } catch {}
         }
@@ -314,11 +329,11 @@ $eRows = if ($errors) {
 
 # GROUPING APPS
 $aRows = if ($apps) {
-    $groupedApps = $apps | Group-Object -Property @{Expression={if($_.AppID){$_.AppID}else{$_.Message}}}
+    $groupedApps = $apps | Group-Object -Property @{Expression={if($_.AppID -and $_.AppID -ne "LOB/Store App"){$_.AppID}else{$_.Message}}}
     
     $groupedApps | ForEach-Object { 
         $first = $_.Group[0]
-        $idDisplay = if ($first.AppID -and $first.AppID -ne "LOB/Store App") { "<a href='https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppWorkloadReadOnlyDocument/~/appId/$($first.AppID)' target='_blank' class='badge portal'>&#128230; $($first.AppID.Substring(0,8))...</a>" } elseif ($first.AppID) { "<span class='badge'>$($first.AppID)</span>" } else { "N/A" }
+        $idDisplay = if ($first.AppID -and $first.AppID -match "^[0-9a-fA-F]{8}-") { "<a href='https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/AppWorkloadReadOnlyDocument/~/appId/$($first.AppID)' target='_blank' class='badge portal'>&#128230; $($first.AppID.Substring(0,8))...</a>" } elseif ($first.AppID -and $first.AppID -ne "LOB/Store App") { "<span class='badge'>$($first.AppID)</span>" } else { "N/A" }
         
         $overallStatus = "Info"
         if ($_.Group.Status -contains "Failed") { $overallStatus = "Failed" }
@@ -327,7 +342,6 @@ $aRows = if ($apps) {
         $msgHtml = if ($_.Count -gt 1) {
             $timeline = $_.Group | ForEach-Object { "<div class='timeline-event'><strong>$($_.Time)</strong> [$($_.Component)] - <span class='status-$($_.Status)'>$($_.Status)</span><br><span style='font-size:0.9em; color:#94a3b8'>$($_.Message)</span></div>" } -join ""
             
-            # Using inline styles for the summary here to prevent .badge inheritance issues breaking the toggle block
             "<details><summary style='cursor:pointer; font-weight:600; color:#38bdf8; outline:none; user-select:none; display:inline-block; margin-bottom:5px;'>&#9654; View Timeline ($($_.Count) Events)</summary><div style='margin-top:5px; border-top:1px dashed #334155; padding-top:10px;'>$timeline</div></details>"
         } else {
             $first.Message
